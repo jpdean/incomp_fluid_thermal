@@ -350,10 +350,10 @@ lmbda = conditional(gt(dot(u_n, n), 0), 1, 0)
 
 # FIXME Use u_h not u_n
 a_T = inner(T / delta_t, w) * dx - \
-    inner(u_n * T, grad(w)) * dx + \
-    inner(lmbda("+") * dot(u_n("+"), n("+")) * T("+") -
-          lmbda("-") * dot(u_n("-"), n("-")) * T("-"), jump_T(w)) * dS + \
-    inner(lmbda * dot(u_n, n) * T, w) * ds + \
+    inner(u_h * T, grad(w)) * dx + \
+    inner(lmbda("+") * dot(u_h("+"), n("+")) * T("+") -
+          lmbda("-") * dot(u_h("-"), n("-")) * T("-"), jump_T(w)) * dS + \
+    inner(lmbda * dot(u_h, n) * T, w) * ds + \
     kappa * (inner(grad(T), grad(w)) * dx -
              inner(avg(grad(T)), jump_T(w, n)) * dS -
              inner(jump_T(T, n), avg(grad(w))) * dS +
@@ -367,7 +367,7 @@ for bc in dirichlet_bcs_T:
     a_T += kappa * (- inner(grad(T), w * n) * ds(bc[0]) -
                     inner(grad(w), T * n) * ds(bc[0]) +
                     (alpha / h) * inner(T, w) * ds(bc[0]))
-    L_T += - inner((1 - lmbda) * dot(u_n, n) * T_D, w) * ds(bc[0]) + \
+    L_T += - inner((1 - lmbda) * dot(u_h, n) * T_D, w) * ds(bc[0]) + \
         kappa * (- inner(T_D * n, grad(w)) * ds(bc[0]) +
                  (alpha / h) * inner(T_D, w) * ds(bc[0]))
 
@@ -381,10 +381,20 @@ for bc in robin_bcs_T:
     a_T += kappa * inner(alpha_R * T, w) * ds(bc[0])
     L_T += kappa * inner(beta_R, w) * ds(bc[0])
 
-a_T = fem.form(a)
-L_T = fem.form(L)
+a_T = fem.form(a_T)
+L_T = fem.form(L_T)
 
-assert(False)
+A_T = fem.petsc.create_matrix(a_T)
+b_T = fem.petsc.create_vector(L_T)
+
+ksp_T = PETSc.KSP().create(msh.comm)
+ksp_T.setOperators(A_T)
+ksp_T.setType("preonly")
+ksp_T.getPC().setType("lu")
+ksp_T.getPC().setFactorSolverType("superlu_dist")
+
+T_file = io.VTXWriter(msh.comm, "T.bp", [T_n._cpp_object])
+T_file.write(t)
 
 # Now we add the time stepping and convective terms
 
@@ -426,11 +436,24 @@ for n in range(num_time_steps):
     p_h.x.array[:(len(x.array_r) - offset)] = x.array_r[offset:]
     p_h.x.scatter_forward()
 
+    A_T.zeroEntries()
+    fem.petsc.assemble_matrix(A_T, a_T)
+    A_T.assemble()
+
+    with b_T.localForm() as b_T_loc:
+        b_T_loc.set(0)
+    fem.petsc.assemble_vector(b_T, L_T)
+    b_T.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+
+    ksp_T.solve(b_T, T_n.vector)
+    T_n.x.scatter_forward()
+
     u_vis.interpolate(u_h)
 
     # Write to file
     u_file.write(t)
     p_file.write(t)
+    T_file.write(t)
 
     # Update u_n
     u_n.x.array[:] = u_h.x.array
