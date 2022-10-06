@@ -151,6 +151,7 @@ import numpy as np
 from ufl import (TrialFunction, TestFunction, CellDiameter, FacetNormal,
                  inner, grad, dx, dS, avg, outer, div, conditional,
                  gt, dot, Measure)
+from ufl import jump as jump_T
 import benchmark_mesh
 
 # We also define some helper functions that will be used later
@@ -173,8 +174,8 @@ def domain_average(msh, v):
 
 # We define some simulation parameters
 
-num_time_steps = 100
-t_end = 1
+num_time_steps = 10
+t_end = 0.1
 R_e = 1000  # Reynolds Number
 k = 2  # Polynomial degree
 
@@ -197,16 +198,21 @@ W = fem.VectorFunctionSpace(msh, ("Discontinuous Lagrange", k + 1))
 
 u, v = TrialFunction(V), TestFunction(V)
 p, q = TrialFunction(Q), TestFunction(Q)
+T, w = TrialFunction(Q), TestFunction(Q)
 
 delta_t = fem.Constant(msh, PETSc.ScalarType(t_end / num_time_steps))
 alpha = fem.Constant(msh, PETSc.ScalarType(6.0 * k**2))
+alpha_T = fem.Constant(msh, PETSc.ScalarType(6.0 * k**2))
 R_e_const = fem.Constant(msh, PETSc.ScalarType(R_e))
+kappa = fem.Constant(msh, PETSc.ScalarType(0.01))
 
 # List of tuples of form (id, expression)
 dirichlet_bcs = [(boundary_id["inlet"], lambda x: np.vstack(((1.5 * 4 * x[1] * (0.41 - x[1])) / 0.41**2, np.zeros_like(x[0])))),
-                 (boundary_id["wall"], lambda x: np.vstack((np.zeros_like(x[0]), np.zeros_like(x[0])))),
+                 (boundary_id["wall"], lambda x: np.vstack(
+                     (np.zeros_like(x[0]), np.zeros_like(x[0])))),
                  (boundary_id["obstacle"], lambda x: np.vstack((np.zeros_like(x[0]), np.zeros_like(x[0]))))]
-neumann_bcs = [(boundary_id["outlet"], fem.Constant(msh, np.array([0.0, 0.0], dtype=PETSc.ScalarType)))]
+neumann_bcs = [(boundary_id["outlet"], fem.Constant(
+    msh, np.array([0.0, 0.0], dtype=PETSc.ScalarType)))]
 
 ds = Measure("ds", domain=msh, subdomain_data=mt)
 
@@ -240,8 +246,8 @@ L_1 = inner(fem.Constant(msh, PETSc.ScalarType(0.0)), q) * dx
 bcs = []
 for bc in dirichlet_bcs:
     a_00 += 1 / R_e_const * (- inner(grad(u), outer(v, n)) * ds(bc[0])
-                        - inner(outer(u, n), grad(v)) * ds(bc[0])
-                        + alpha / h * inner(outer(u, n), outer(v, n)) * ds(bc[0]))
+                             - inner(outer(u, n), grad(v)) * ds(bc[0])
+                             + alpha / h * inner(outer(u, n), outer(v, n)) * ds(bc[0]))
     u_D = fem.Function(V)
     u_D.interpolate(bc[1])
     L_0 += 1 / R_e_const * (- inner(outer(u_D, n), grad(v)) * ds(bc[0])
@@ -275,8 +281,8 @@ if len(neumann_bcs) == 0:
     else:
         pressure_dof = []
     bc_p = fem.dirichletbc(PETSc.ScalarType(0.0),
-                        np.array(pressure_dof, dtype=np.int32),
-                        Q)
+                           np.array(pressure_dof, dtype=np.int32),
+                           Q)
 
 # Assemble Stokes problem
 
@@ -327,14 +333,61 @@ t = 0.0
 u_file.write(t)
 p_file.write(t)
 
+T_n = fem.Function(Q)
+
+dirichlet_bcs_T = [(boundary_id["inlet"], lambda x: np.zeros_like(x[0]))]
+neumann_bcs_T = [(boundary_id["outlet"], lambda x: np.zeros_like(x[0]))]
+robin_bcs_T = [(boundary_id["wall"], (0.0, 0.0)),
+               (boundary_id["obstacle"], (1.0, 1.0))]
+
+
 # Create function to store solution and previous time step
 
 u_n = fem.Function(V)
 u_n.x.array[:] = u_h.x.array
 
+lmbda = conditional(gt(dot(u_n, n), 0), 1, 0)
+
+# FIXME Use u_h not u_n
+a_T = inner(T / delta_t, w) * dx - \
+    inner(u_n * T, grad(w)) * dx + \
+    inner(lmbda("+") * dot(u_n("+"), n("+")) * T("+") -
+          lmbda("-") * dot(u_n("-"), n("-")) * T("-"), jump_T(w)) * dS + \
+    inner(lmbda * dot(u_n, n) * T, w) * ds + \
+    kappa * (inner(grad(T), grad(w)) * dx -
+             inner(avg(grad(T)), jump_T(w, n)) * dS -
+             inner(jump_T(T, n), avg(grad(w))) * dS +
+             (alpha / avg(h)) * inner(jump_T(T, n), jump_T(w, n)) * dS)
+
+L_T = inner(T_n / delta_t, w) * dx
+
+for bc in dirichlet_bcs_T:
+    T_D = fem.Function(Q)
+    T_D.interpolate(bc[1])
+    a_T += kappa * (- inner(grad(T), w * n) * ds(bc[0]) -
+                    inner(grad(w), T * n) * ds(bc[0]) +
+                    (alpha / h) * inner(T, w) * ds(bc[0]))
+    L_T += - inner((1 - lmbda) * dot(u_n, n) * T_D, w) * ds(bc[0]) + \
+        kappa * (- inner(T_D * n, grad(w)) * ds(bc[0]) +
+                 (alpha / h) * inner(T_D, w) * ds(bc[0]))
+
+for bc in neumann_bcs_T:
+    g_T = fem.Function(Q)
+    g_T.interpolate(bc[1])
+    L_T += kappa * inner(g_T, w) * ds(bc[0])
+
+for bc in robin_bcs_T:
+    alpha_R, beta_R = bc[1]
+    a_T += kappa * inner(alpha_R * T, w) * ds(bc[0])
+    L_T += kappa * inner(beta_R, w) * ds(bc[0])
+
+a_T = fem.form(a)
+L_T = fem.form(L)
+
+assert(False)
+
 # Now we add the time stepping and convective terms
 
-lmbda = conditional(gt(dot(u_n, n), 0), 1, 0)
 u_uw = lmbda("+") * u("+") + lmbda("-") * u("-")
 a_00 += inner(u / delta_t, v) * dx - \
     inner(u, div(outer(v, u_n))) * dx + \
