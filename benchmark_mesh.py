@@ -17,63 +17,64 @@ def generate():
     gdim = 2
     order = 1
 
+    volume_id = {"fluid": 1}
+
     boundary_id = {"inlet": 2,
                    "outlet": 3,
                    "wall": 4,
                    "obstacle": 5}
 
+    res_min = r / 3
+
     mesh_comm = MPI.COMM_WORLD
     model_rank = 0
     if mesh_comm.rank == model_rank:
-        rectangle = gmsh.model.occ.addRectangle(0, 0, 0, L, H, tag=1)
-        obstacle = gmsh.model.occ.addDisk(c_x, c_y, 0, r, r)
+        rectangle = gmsh.model.occ.addRectangle(0, 0, 0, L, H)
+        obstacle_tags = gmsh.model.occ.addDisk(c_x, c_y, 0, r, r)
 
-    if mesh_comm.rank == model_rank:
-        fluid = gmsh.model.occ.cut([(gdim, rectangle)], [(gdim, obstacle)])
+        fluid = gmsh.model.occ.cut([(gdim, rectangle)], [(gdim, obstacle_tags)])
         gmsh.model.occ.synchronize()
 
-    fluid_marker = 1
-    if mesh_comm.rank == model_rank:
+        # Get volumes in model (as list of (dim, tag))
         volumes = gmsh.model.getEntities(dim=gdim)
-        assert (len(volumes) == 1)
+        assert (len(volumes) == 1)  # Just one volume for fluid
+        # Tag fluid
         gmsh.model.addPhysicalGroup(
-            volumes[0][0], [volumes[0][1]], fluid_marker)
-        gmsh.model.setPhysicalName(volumes[0][0], fluid_marker, "Fluid")
+            volumes[0][0], [volumes[0][1]], volume_id["fluid"])
+        gmsh.model.setPhysicalName(volumes[0][0], volume_id["fluid"], "Fluid")
 
-    inflow, outflow, walls, obstacle = [], [], [], []
-    if mesh_comm.rank == model_rank:
+        inflow_tags, outflow_tags, walls_tags, obstacle_tags = [], [], [], []
+
         boundaries = gmsh.model.getBoundary(volumes, oriented=False)
         for boundary in boundaries:
             center_of_mass = gmsh.model.occ.getCenterOfMass(
                 boundary[0], boundary[1])
             if np.allclose(center_of_mass, [0, H/2, 0]):
-                inflow.append(boundary[1])
+                inflow_tags.append(boundary[1])
             elif np.allclose(center_of_mass, [L, H/2, 0]):
-                outflow.append(boundary[1])
+                outflow_tags.append(boundary[1])
             elif np.allclose(center_of_mass, [L/2, H, 0]) or np.allclose(center_of_mass, [L/2, 0, 0]):
-                walls.append(boundary[1])
+                walls_tags.append(boundary[1])
             else:
-                obstacle.append(boundary[1])
-        gmsh.model.addPhysicalGroup(1, walls, boundary_id["wall"])
+                obstacle_tags.append(boundary[1])
+        gmsh.model.addPhysicalGroup(1, walls_tags, boundary_id["wall"])
         gmsh.model.setPhysicalName(1, boundary_id["wall"], "Walls")
-        gmsh.model.addPhysicalGroup(1, inflow, boundary_id["inlet"])
+        gmsh.model.addPhysicalGroup(1, inflow_tags, boundary_id["inlet"])
         gmsh.model.setPhysicalName(1, boundary_id["inlet"], "Inlet")
-        gmsh.model.addPhysicalGroup(1, outflow, boundary_id["outlet"])
+        gmsh.model.addPhysicalGroup(1, outflow_tags, boundary_id["outlet"])
         gmsh.model.setPhysicalName(1, boundary_id["outlet"], "Outlet")
-        gmsh.model.addPhysicalGroup(1, obstacle, boundary_id["obstacle"])
+        gmsh.model.addPhysicalGroup(1, obstacle_tags, boundary_id["obstacle"])
         gmsh.model.setPhysicalName(1, boundary_id["obstacle"], "Obstacle")
 
-    # Create distance field from obstacle.
-    # Add threshold of mesh sizes based on the distance field
-    # LcMax -                  /--------
-    #                      /
-    # LcMin -o---------/
-    #        |         |       |
-    #       Point    DistMin DistMax
-    res_min = r / 3
-    if mesh_comm.rank == model_rank:
+        # Create distance field from obstacle.
+        # Add threshold of mesh sizes based on the distance field
+        # LcMax -                  /--------
+        #                      /
+        # LcMin -o---------/
+        #        |         |       |
+        #       Point    DistMin DistMax
         distance_field = gmsh.model.mesh.field.add("Distance")
-        gmsh.model.mesh.field.setNumbers(distance_field, "EdgesList", obstacle)
+        gmsh.model.mesh.field.setNumbers(distance_field, "EdgesList", obstacle_tags)
         threshold_field = gmsh.model.mesh.field.add("Threshold")
         gmsh.model.mesh.field.setNumber(
             threshold_field, "IField", distance_field)
@@ -86,7 +87,6 @@ def generate():
             min_field, "FieldsList", [threshold_field])
         gmsh.model.mesh.field.setAsBackgroundMesh(min_field)
 
-    if mesh_comm.rank == model_rank:
         # gmsh.option.setNumber("Mesh.Algorithm", 8)
         # gmsh.option.setNumber("Mesh.RecombinationAlgorithm", 2)
         # gmsh.option.setNumber("Mesh.RecombineAll", 1)
@@ -101,3 +101,12 @@ def generate():
     ft.name = "Facet markers"
 
     return msh, ft, boundary_id
+
+
+if __name__ == "__main__":
+    msh, ft, boundary_id = generate()
+
+    from dolfinx import io
+    with io.XDMFFile(msh.comm, "benchmark_mesh.xdmf", "w") as file:
+        file.write_mesh(msh)
+        file.write_meshtags(ft)
