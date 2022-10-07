@@ -202,7 +202,7 @@ T, w = TrialFunction(Q), TestFunction(Q)
 
 delta_t = fem.Constant(msh, PETSc.ScalarType(t_end / num_time_steps))
 alpha = fem.Constant(msh, PETSc.ScalarType(6.0 * k**2))
-alpha_T = fem.Constant(msh, PETSc.ScalarType(6.0 * k**2))
+alpha_T = fem.Constant(msh, PETSc.ScalarType(10.0 * k**2))
 R_e_const = fem.Constant(msh, PETSc.ScalarType(R_e))
 kappa = fem.Constant(msh, PETSc.ScalarType(0.01))
 
