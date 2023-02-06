@@ -150,7 +150,7 @@ from petsc4py import PETSc
 import numpy as np
 from ufl import (TrialFunction, TestFunction, CellDiameter, FacetNormal,
                  inner, grad, dx, dS, avg, outer, div, conditional,
-                 gt, dot, Measure)
+                 gt, dot, Measure, as_vector)
 from ufl import jump as jump_T
 import benchmark_mesh
 
@@ -174,8 +174,8 @@ def domain_average(msh, v):
 
 # We define some simulation parameters
 
-num_time_steps = 10
-t_end = 0.1
+num_time_steps = 100
+t_end = 2
 R_e = 1000  # Reynolds Number
 k = 2  # Polynomial degree
 
@@ -233,6 +233,7 @@ a_00 = 1 / R_e_const * (inner(grad(u), grad(v)) * dx
                         + alpha / avg(h) * inner(jump(u, n), jump(v, n)) * dS)
 a_01 = - inner(p, div(v)) * dx
 a_10 = - inner(div(u), q) * dx
+# TODO Remove
 a_11 = fem.Constant(msh, PETSc.ScalarType(0.0)) * inner(p, q) * dx
 
 f = fem.Function(W)
@@ -272,6 +273,7 @@ L = fem.form([L_0,
 
 # TODO TIDY
 # FIXME This assumes there is a vertex at point (0, 0)
+# TODO Change solver settings instead
 if len(neumann_bcs) == 0:
     pressure_dofs = fem.locate_dofs_geometrical(
         Q, lambda x: np.logical_and(np.isclose(x[0], 0.0),
@@ -396,7 +398,15 @@ ksp_T.getPC().setFactorSolverType("superlu_dist")
 T_file = io.VTXWriter(msh.comm, "T.bp", [T_n._cpp_object])
 T_file.write(t)
 
-# Now we add the time stepping and convective terms
+# Now we add the time stepping, convective, and buoyancy terms
+# TODO Figure out correct way of "linearising"
+# For buoyancy term, see https://en.wikipedia.org/wiki/Boussinesq_approximation_(buoyancy)
+# where I've omitted the rho g h part (can think of this is
+# lumping gravity in with pressure, see 2P4 notes) and taken
+# T_0 to be 0
+g = as_vector((0.0, -9.81))
+rho_0 = fem.Constant(msh, PETSc.ScalarType(1.0))
+eps = fem.Constant(msh, PETSc.ScalarType(10.0))  # Thermal expansion coeff
 
 u_uw = lmbda("+") * u("+") + lmbda("-") * u("-")
 a_00 += inner(u / delta_t, v) * dx - \
@@ -407,7 +417,7 @@ a_00 += inner(u / delta_t, v) * dx - \
 a = fem.form([[a_00, a_01],
               [a_10, a_11]])
 
-L_0 += inner(u_n / delta_t, v) * dx
+L_0 += inner(u_n / delta_t - eps * rho_0 * T_n * g, v) * dx
 
 for bc in dirichlet_bcs:
     u_D = fem.Function(V)
