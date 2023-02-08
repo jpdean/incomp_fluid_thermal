@@ -190,7 +190,6 @@ comm = MPI.COMM_WORLD
 
 msh, mt, boundary_id = mesh_generator.generate(comm, h=h, h_fac=h_fac)
 
-# msh = mesh.create_unit_square(MPI.COMM_WORLD, n, n)
 # Function space for the velocity
 V = fem.FunctionSpace(msh, ("Raviart-Thomas", k + 1))
 # Function space for the pressure
@@ -237,8 +236,6 @@ a_00 = 1 / R_e_const * (inner(grad(u), grad(v)) * dx
                         + alpha / avg(h) * inner(jump(u, n), jump(v, n)) * dS)
 a_01 = - inner(p, div(v)) * dx
 a_10 = - inner(div(u), q) * dx
-# TODO Remove
-a_11 = fem.Constant(msh, PETSc.ScalarType(0.0)) * inner(p, q) * dx
 
 f = fem.Function(W)
 # NOTE: Arrived at Neumann BC term by rewriting inner(grad(u), outer(v, n))
@@ -268,27 +265,9 @@ for bc in neumann_bcs:
     L_0 += 1 / R_e_const * inner(bc[1], v) * ds(bc[0])
 
 a = fem.form([[a_00, a_01],
-              [a_10, a_11]])
+              [a_10, None]])
 L = fem.form([L_0,
               L_1])
-
-# If the pressure is only determined up to a constant, pin a single degree
-# of freedom
-
-# TODO TIDY
-# FIXME This assumes there is a vertex at point (0, 0)
-# TODO Change solver settings instead
-if len(neumann_bcs) == 0:
-    pressure_dofs = fem.locate_dofs_geometrical(
-        Q, lambda x: np.logical_and(np.isclose(x[0], 0.0),
-                                    np.isclose(x[1], 0.0)))
-    if len(pressure_dofs) > 0:
-        pressure_dof = [pressure_dofs[0]]
-    else:
-        pressure_dof = []
-    bc_p = fem.dirichletbc(PETSc.ScalarType(0.0),
-                           np.array(pressure_dof, dtype=np.int32),
-                           Q)
 
 # Assemble Stokes problem
 
@@ -309,6 +288,10 @@ opts = PETSc.Options()
 opts["mat_mumps_icntl_6"] = 2
 opts["mat_mumps_icntl_14"] = 100
 opts["ksp_error_if_not_converged"] = 1
+
+if len(neumann_bcs) == 0:
+    opts["mat_mumps_icntl_24"] = 1  # Option to support solving a singular matrix (pressure nullspace)
+    opts["mat_mumps_icntl_25"] = 0  # Option to support solving a singular matrix (pressure nullspace)
 ksp.setFromOptions()
 
 # Solve Stokes for initial condition
@@ -326,6 +309,8 @@ u_h.x.array[:offset] = x.array_r[:offset]
 u_h.x.scatter_forward()
 p_h.x.array[:(len(x.array_r) - offset)] = x.array_r[offset:]
 p_h.x.scatter_forward()
+if len(neumann_bcs) == 0:
+    p_h.x.array[:] -= domain_average(msh, p_h)
 
 u_vis = fem.Function(W)
 u_vis.name = "u"
@@ -419,7 +404,7 @@ a_00 += inner(u / delta_t, v) * dx - \
     inner((dot(u_n, n))("-") * u_uw, v("-")) * dS + \
     inner(dot(u_n, n) * lmbda * u, v) * ds
 a = fem.form([[a_00, a_01],
-              [a_10, a_11]])
+              [a_10, None]])
 
 L_0 += inner(u_n / delta_t - eps * rho_0 * T_n * g, v) * dx
 
@@ -449,6 +434,8 @@ for n in range(num_time_steps):
     u_h.x.scatter_forward()
     p_h.x.array[:(len(x.array_r) - offset)] = x.array_r[offset:]
     p_h.x.scatter_forward()
+    if len(neumann_bcs) == 0:
+        p_h.x.array[:] -= domain_average(msh, p_h)
 
     A_T.zeroEntries()
     fem.petsc.assemble_matrix(A_T, a_T)
