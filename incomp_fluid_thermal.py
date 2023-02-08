@@ -152,7 +152,7 @@ from ufl import (TrialFunction, TestFunction, CellDiameter, FacetNormal,
                  inner, grad, dx, dS, avg, outer, div, conditional,
                  gt, dot, Measure, as_vector)
 from ufl import jump as jump_T
-import benchmark_mesh
+import mesh_generator
 
 # We also define some helper functions that will be used later
 
@@ -177,14 +177,18 @@ def domain_average(msh, v):
 num_time_steps = 100
 t_end = 2
 R_e = 1000  # Reynolds Number
+h = 0.05
+h_fac = 1 / 3  # Factor scaling h near the cylinder
 k = 2  # Polynomial degree
+
+comm = MPI.COMM_WORLD
 
 # Next, we create a mesh and the required functions spaces over
 # it. Since the velocity uses an $H(\textnormal{div})$-conforming function
 # space, we also create a vector valued discontinuous Lagrange space
 # to interpolate into for artifact free visualisation.
 
-msh, mt, boundary_id = benchmark_mesh.generate()
+msh, mt, boundary_id = mesh_generator.generate(comm, h=h, h_fac=h_fac)
 
 # msh = mesh.create_unit_square(MPI.COMM_WORLD, n, n)
 # Function space for the velocity
