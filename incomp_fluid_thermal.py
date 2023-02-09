@@ -144,7 +144,7 @@
 # ## Implementation
 # We begin by importing the required modules and functions
 
-from dolfinx import mesh, fem, io
+from dolfinx import fem, io
 from mpi4py import MPI
 from petsc4py import PETSc
 import numpy as np
@@ -205,15 +205,19 @@ T, w = TrialFunction(Q), TestFunction(Q)
 
 delta_t = fem.Constant(msh, PETSc.ScalarType(t_end / num_time_steps))
 alpha = fem.Constant(msh, PETSc.ScalarType(6.0 * k**2))
-alpha_T = fem.Constant(msh, PETSc.ScalarType(10.0 * k**2))
 R_e_const = fem.Constant(msh, PETSc.ScalarType(R_e))
 kappa = fem.Constant(msh, PETSc.ScalarType(0.01))
 
 # List of tuples of form (id, expression)
-dirichlet_bcs = [(boundary_id["inlet"], lambda x: np.vstack(((1.5 * 4 * x[1] * (0.41 - x[1])) / 0.41**2, np.zeros_like(x[0])))),
+dirichlet_bcs = [(boundary_id["inlet"],
+                  lambda x: np.vstack(
+                    ((1.5 * 4 * x[1] * (0.41 - x[1])) / 0.41**2,
+                     np.zeros_like(x[0])))),
                  (boundary_id["wall"], lambda x: np.vstack(
                      (np.zeros_like(x[0]), np.zeros_like(x[0])))),
-                 (boundary_id["obstacle"], lambda x: np.vstack((np.zeros_like(x[0]), np.zeros_like(x[0]))))]
+                 (boundary_id["obstacle"],
+                  lambda x: np.vstack((
+                    np.zeros_like(x[0]), np.zeros_like(x[0]))))]
 neumann_bcs = [(boundary_id["outlet"], fem.Constant(
     msh, np.array([0.0, 0.0], dtype=PETSc.ScalarType)))]
 
@@ -249,11 +253,13 @@ bcs = []
 for bc in dirichlet_bcs:
     a_00 += 1 / R_e_const * (- inner(grad(u), outer(v, n)) * ds(bc[0])
                              - inner(outer(u, n), grad(v)) * ds(bc[0])
-                             + alpha / h * inner(outer(u, n), outer(v, n)) * ds(bc[0]))
+                             + alpha / h * inner(
+                                outer(u, n), outer(v, n)) * ds(bc[0]))
     u_D = fem.Function(V)
     u_D.interpolate(bc[1])
     L_0 += 1 / R_e_const * (- inner(outer(u_D, n), grad(v)) * ds(bc[0])
-                            + alpha / h * inner(outer(u_D, n), outer(v, n)) * ds(bc[0]))
+                            + alpha / h * inner(
+                                outer(u_D, n), outer(v, n)) * ds(bc[0]))
 
     bc_boundary_facets = mt.indices[mt.values == bc[0]]
     bc_dofs = fem.locate_dofs_topological(
@@ -290,8 +296,9 @@ opts["mat_mumps_icntl_14"] = 100
 opts["ksp_error_if_not_converged"] = 1
 
 if len(neumann_bcs) == 0:
-    opts["mat_mumps_icntl_24"] = 1  # Option to support solving a singular matrix (pressure nullspace)
-    opts["mat_mumps_icntl_25"] = 0  # Option to support solving a singular matrix (pressure nullspace)
+    # Options to support solving a singular matrix (pressure nullspace)
+    opts["mat_mumps_icntl_24"] = 1
+    opts["mat_mumps_icntl_25"] = 0
 ksp.setFromOptions()
 
 # Solve Stokes for initial condition
@@ -389,7 +396,8 @@ T_file.write(t)
 
 # Now we add the time stepping, convective, and buoyancy terms
 # TODO Figure out correct way of "linearising"
-# For buoyancy term, see https://en.wikipedia.org/wiki/Boussinesq_approximation_(buoyancy)
+# For buoyancy term, see
+# https://en.wikipedia.org/wiki/Boussinesq_approximation_(buoyancy)
 # where I've omitted the rho g h part (can think of this is
 # lumping gravity in with pressure, see 2P4 notes) and taken
 # T_0 to be 0
